@@ -9,11 +9,13 @@ import {
   Plus,
   Edit2,
   Trash2,
-  X
+  X,
+  Heart
 } from 'lucide-react';
 import { Tactic, OFFICIAL_TAGS, TAG_ICONS } from '../types/tds';
 import { translations, Language } from '../i18n/translations';
 import { TdsGemIcon } from './TdsGemIcon';
+import { fetchLikes, toggleLike, LikesMap } from '../lib/likes';
 
 
 const renderTagIcon = (tag: string) => {
@@ -131,9 +133,51 @@ export const TacticsList: React.FC<TacticsListProps> = ({
   const [newTags, setNewTags] = useState<string[]>(['Fallen', 'Solo']);
   const [newDesc, setNewDesc] = useState('');
 
+  // Likes
+  const [likes, setLikes] = useState<LikesMap>({});
+  const [likesAvailable, setLikesAvailable] = useState(false);
+  const [sortBy, setSortBy] = useState<'newest' | 'liked'>('newest');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetchLikes()
+      .then((map) => {
+        if (cancelled) return;
+        setLikes(map);
+        setLikesAvailable(true);
+      })
+      .catch((err) => {
+        // Таблица лайков ещё не создана в Supabase: просто скрываем лайки
+        console.warn('Likes unavailable:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleToggleLike = async (e: React.MouseEvent, tacticId: string) => {
+    e.stopPropagation();
+    const prev = likes[tacticId] ?? { count: 0, liked: false };
+    // сразу меняем на экране, потом сверяемся с сервером
+    setLikes((m) => ({
+      ...m,
+      [tacticId]: {
+        liked: !prev.liked,
+        count: Math.max(0, prev.count + (prev.liked ? -1 : 1))
+      }
+    }));
+    try {
+      const real = await toggleLike(tacticId);
+      setLikes((m) => ({ ...m, [tacticId]: real }));
+    } catch (err) {
+      console.error('Failed to toggle like:', err);
+      setLikes((m) => ({ ...m, [tacticId]: prev }));
+    }
+  };
+
   // Filter tactics by search and multiple tags
   const filteredTactics = useMemo(() => {
-    return tactics.filter(tactic => {
+    const result = tactics.filter(tactic => {
       const q = searchQuery.toLowerCase().trim();
       const authorText = (tactic.author === 'Ayaka' ? 'Author' : tactic.author).toLowerCase();
       const matchesSearch =
@@ -150,7 +194,15 @@ export const TacticsList: React.FC<TacticsListProps> = ({
 
       return matchesSearch && matchesTags;
     });
-  }, [tactics, searchQuery, activeTags]);
+
+    if (sortBy === 'liked') {
+      // по лайкам; при равенстве сохраняется исходный порядок (новые выше)
+      return [...result].sort(
+        (a, b) => (likes[b.id]?.count ?? 0) - (likes[a.id]?.count ?? 0)
+      );
+    }
+    return result;
+  }, [tactics, searchQuery, activeTags, sortBy, likes]);
 
   const handleCopyLink = (e: React.MouseEvent, tactic: Tactic) => {
     e.stopPropagation();
@@ -338,6 +390,28 @@ export const TacticsList: React.FC<TacticsListProps> = ({
           ))}
           {searchQuery && <span className="ml-1 text-neutral-400">· "{searchQuery}"</span>}
         </div>
+        {likesAvailable && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-neutral-500">Sort:</span>
+            {([
+              ['newest', 'Newest'],
+              ['liked', 'Most liked']
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSortBy(key)}
+                className={`px-2.5 py-1 rounded-lg border transition-colors ${
+                  sortBy === key
+                    ? 'bg-neutral-200 text-black border-neutral-200 font-bold'
+                    : 'bg-neutral-900/80 text-neutral-400 border-neutral-800 hover:border-neutral-600 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Loading / error */}
@@ -482,14 +556,38 @@ export const TacticsList: React.FC<TacticsListProps> = ({
                       {t.authorPrefix} <strong className="text-white font-mono">{displayAuthor}</strong>
                     </span>
                   </div>
-                  {isAdmin && (
-                    <button
-                      onClick={() => setEditingTactic({ ...tactic, author: displayAuthor })}
-                      className="text-[11px] font-mono text-neutral-500 hover:text-neutral-300 underline"
-                    >
-                      {t.edit}
-                    </button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {isAdmin && (
+                      <button
+                        onClick={() => setEditingTactic({ ...tactic, author: displayAuthor })}
+                        className="text-[11px] font-mono text-neutral-500 hover:text-neutral-300 underline"
+                      >
+                        {t.edit}
+                      </button>
+                    )}
+                    {likesAvailable && (() => {
+                      const info = likes[tactic.id] ?? { count: 0, liked: false };
+                      return (
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleLike(e, tactic.id)}
+                          aria-pressed={info.liked}
+                          title={info.liked ? 'Remove like' : 'Like this strategy'}
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-mono transition-all active:scale-95 ${
+                            info.liked
+                              ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                              : 'border-neutral-800 text-neutral-400 hover:text-white hover:border-neutral-600'
+                          }`}
+                        >
+                          <Heart
+                            className="w-3.5 h-3.5"
+                            fill={info.liked ? 'currentColor' : 'none'}
+                          />
+                          <span>{info.count}</span>
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </div>
               </div>
             </div>
